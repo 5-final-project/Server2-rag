@@ -1,0 +1,10 @@
+services:
+  pipeline:
+    build: .
+    container_name: agentic_rag
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data          # 임시 저장소
+    ports:
+      - "8125:8125"               # FastAPI
