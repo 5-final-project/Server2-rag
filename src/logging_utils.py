@@ -34,12 +34,16 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 def setup_json_logger(logfile_path="/var/logs/server2_rag/server2_rag.log", server_name="server2-rag"):
-    LOG_DIR = "/var/logs/server2_rag"
-    LOG_FILE = os.path.join(LOG_DIR, "server2_rag.log")
+    import os
+    LOG_DIR = os.path.dirname(logfile_path)
     os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(LOG_FILE)
+    # Remove all existing handlers
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+    handler = logging.FileHandler(logfile_path)
     handler.setFormatter(JsonFormatter(server_name))
-    logger.handlers = [handler]
+    logger.addHandler(handler)
     return logger
+##
