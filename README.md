@@ -1,5 +1,5 @@
 # Server2-rag: 랭그래프 기반 에이전틱 RAG 시스템
-AIzaSyCRpTxu3FRgreewYtzoQ4-tINkkf6jaWzU
+
 회의 텍스트를 입력 받아 LLM과 벡터 검색을 활용한 에이전틱 RAG(Retrieval-Augmented Generation) 시스템입니다. 텍스트를 의미 단위로 분할하고, Google Gemini를 활용해 요약·쿼리 생성, 문서 검색 및 적합성 평가를 수행하는 종합 파이프라인을 제공합니다. 
 
 
