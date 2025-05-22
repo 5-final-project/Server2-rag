@@ -12,4 +12,3 @@ class ChunkResult(BaseModel):
     similar_documents: List[SimilarDoc] = Field(default_factory=list)
     elapsed_time: float
     error: str | None = None
-4
