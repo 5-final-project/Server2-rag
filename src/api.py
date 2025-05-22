@@ -7,25 +7,16 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Any, Dict, List
 import logging
-import sys # sys 모듈 임포트
+import sys
+import time
+import uuid
 from .graph import run_pipeline
+from .logging_utils import setup_json_logger
+from fastapi import Request
 
-# -- 로깅 설정 시작 --
-# 이 설정은 애플리케이션 전체에 적용되며, 다른 모듈에서 logging.getLogger(__name__)를 통해
-# 로거를 가져와 사용하면 동일한 설정을 공유합니다.
-logging.basicConfig(
-    level=logging.INFO,  # INFO 레벨 이상의 모든 로그를 처리
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", # 로그 형식 지정
-    handlers=[
-        logging.StreamHandler(sys.stdout)  # 로그를 표준 출력(콘솔)으로 보냄
-    ],
-    force=True # 이미 설정된 핸들러가 있더라도 이 설정을 강제로 적용 (Uvicorn 등에서 설정한 핸들러 덮어쓰기)
-)
-# -- 로깅 설정 끝 --
-
-# api.py 모듈 자체의 로거 (필요시 사용)
-logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG) # 이 파일의 로그만 DEBUG로 보고 싶다면 주석 해제
+# JSON Logger 설정 (logs/server2_rag.log)
+setup_json_logger("logs/server2_rag.log", "server2-rag")
+logger = logging.getLogger("server2_rag")
 
 app = FastAPI()
 
@@ -33,13 +24,41 @@ class ProcessRequest(BaseModel):
     text: str
 
 @app.post("/process")
-async def process(req: ProcessRequest) -> Dict[str, Any]:
-    logger.info(f"[API /process] 요청 수신. 텍스트 길이: {len(req.text)}자")
+async def process(req: ProcessRequest, request: Request) -> Dict[str, Any]:
+    trace_id = str(uuid.uuid4())
+    start = time.time()
+    logger.info({
+        "event": "process_request_received",
+        "trace_id": trace_id,
+        "client_host": request.client.host if request.client else None,
+        "text_length": len(req.text)
+    })
     if not req.text.strip():
-        logger.warning("[API /process] 비어 있는 텍스트로 요청됨.")
+        logger.warning({
+            "event": "empty_text_request",
+            "trace_id": trace_id
+        })
         raise HTTPException(status_code=400, detail="text 필드는 비어 있을 수 없습니다.")
-    
-    logger.info("[API /process] run_pipeline 호출 시작...")
-    pipeline_result = run_pipeline(req.text)
-    logger.info(f"[API /process] run_pipeline 호출 완료. 결과: {pipeline_result}")
-    return pipeline_result
+    try:
+        logger.info({
+            "event": "run_pipeline_start",
+            "trace_id": trace_id
+        })
+        pipeline_result = run_pipeline(req.text)
+        elapsed = time.time() - start
+        logger.info({
+            "event": "run_pipeline_completed",
+            "trace_id": trace_id,
+            "elapsed_time": elapsed,
+            "result_keys": list(pipeline_result.keys())
+        })
+        return pipeline_result
+    except Exception as e:
+        elapsed = time.time() - start
+        logger.error({
+            "event": "run_pipeline_error",
+            "trace_id": trace_id,
+            "error": str(e),
+            "elapsed_time": elapsed
+        })
+        raise

@@ -22,3 +22,5 @@ protobuf<5
 # ─── FastAPI 서버 ─────────────────────────────────────────────
 fastapi>=0.110
 uvicorn[standard]>=0.29
+
+python-json-logger

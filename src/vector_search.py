@@ -3,8 +3,14 @@
 """
 import httpx
 import time
+import logging
+import uuid
 from typing import List, Dict, Any, Tuple
 from src.config import get_settings
+from .logging_utils import setup_json_logger
+
+setup_json_logger("logs/server2_rag.log", "server2-rag")
+logger = logging.getLogger("server2_rag")
 
 settings = get_settings()
 _API = settings.VECTOR_API_URL.rstrip("/") + "/search"
@@ -26,15 +32,34 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
         "k": k, 
         "filter": {}
     }
-    
+    trace_id = str(uuid.uuid4())
     start = time.time()
     try:
+        logger.info({
+            "event": "vector_search_start",
+            "trace_id": trace_id,
+            "keywords": keywords,
+            "k": k
+        })
         with httpx.Client(timeout=settings.TIMEOUT_SEC) as client:
             resp = client.post(_API, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("results", []), time.time() - start
+            elapsed = time.time() - start
+            results = data.get("results", [])
+            logger.info({
+                "event": "vector_search_success",
+                "trace_id": trace_id,
+                "elapsed_time": elapsed,
+                "num_results": len(results)
+            })
+            return results, elapsed
     except Exception as e:
-        # 오류 발생 시 로깅 및 빈 결과 반환
-        print(f"Vector search failed: {str(e)}")
-        return [], time.time() - start
+        elapsed = time.time() - start
+        logger.error({
+            "event": "vector_search_error",
+            "trace_id": trace_id,
+            "error": str(e),
+            "elapsed_time": elapsed
+        })
+        return [], elapsed

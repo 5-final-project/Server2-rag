@@ -1,8 +1,12 @@
 # src/llm.py
 import logging
 import re
+import uuid
+import time
+from .logging_utils import setup_json_logger
 
-logger = logging.getLogger(__name__)
+setup_json_logger("logs/server2_rag.log", "server2-rag")
+logger = logging.getLogger("server2_rag")
 """
 LLM 호출 모듈
 - summary: Gemini 1.5 Flash (raw text)

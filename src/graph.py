@@ -7,9 +7,10 @@
 
 import time
 import logging
+import uuid  # UUID 모듈 임포트
+from .logging_utils import setup_json_logger
 from typing import Any, Dict, List, TypedDict, Optional, Callable, Union, Literal, Annotated
 from enum import Enum
-import uuid  # UUID 모듈 임포트
 from langgraph.graph import StateGraph, END
 from langgraph.graph.graph import CompiledGraph
 from langgraph.types import Send
@@ -19,8 +20,9 @@ from src.evaluator import make_summary_and_query, need_search, evaluate_relevanc
 from src.vector_search import search_vector
 from src.config import get_settings
 
-# 로거 설정
-logger = logging.getLogger(__name__)
+# JSON Logger 설정
+setup_json_logger("logs/server2_rag.log", "server2-rag")
+logger = logging.getLogger("server2_rag")
 settings = get_settings()
 
 def log_execution_time(func: Callable) -> Callable:
