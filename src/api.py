@@ -14,9 +14,9 @@ from .graph import run_pipeline
 from .logging_utils import setup_json_logger
 from fastapi import Request
 
-# JSON Logger 설정 (logs/server2_rag.log)
-setup_json_logger("logs/server2_rag.log", "server2-rag")
-logger = logging.getLogger("server2_rag")
+# JSON Logger 설정 (/var/logs/server2_rag/server2_rag.log)
+setup_json_logger("/var/logs/server2_rag/server2_rag.log", "server2-rag")
+logger = logging.getLogger()
 
 app = FastAPI()
 
