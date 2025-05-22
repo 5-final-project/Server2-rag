@@ -34,8 +34,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 def setup_json_logger(logfile_path="/var/logs/server2_rag/server2_rag.log", server_name="server2-rag"):
+    sanitized_name = server_name.replace("-", "_")
     # always write into the host-mounted /var/logs/<server_name> folder
-    logfile_path = f"/var/logs/{server_name}/{server_name}.log"
+    logfile_path = f"/var/logs/{sanitized_name}/{sanitized_name}.log"
     os.makedirs(os.path.dirname(logfile_path), exist_ok=True)
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
