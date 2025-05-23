@@ -4,13 +4,8 @@ pipeline {
   environment {
     IMAGE_NAME = "server2-rag-pipeline"
     IMAGE_TAG  = "${env.BUILD_NUMBER}"
-  }
-
-  CREDENTIALS {
-    credentials {
-      string(credentialsId: 'GEMINI_API_KEY', variable: 'GEMINI_API_KEY')
-      string(credentialsId: 'VECTOR_API_URL', variable: 'VECTOR_API_URL')
-    }
+    GEMINI_API_KEY = credentials('GEMINI_API_KEY')
+    VECTOR_API_URL = credentials('VECTOR_API_URL')
   }
 
   stages {
