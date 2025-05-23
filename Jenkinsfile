@@ -29,6 +29,7 @@ pipeline {
           docker run -d \
             --name agentic_rag \
             -p 8125:8125 \
+            -v "${WORKSPACE}/.env":".env" \
             --env-file .env \
             -v /var/logs/server2_rag:/var/logs/server2_rag \
             ${IMAGE_NAME}:${IMAGE_TAG}
