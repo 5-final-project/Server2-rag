@@ -6,6 +6,13 @@ pipeline {
     IMAGE_TAG  = "${env.BUILD_NUMBER}"
   }
 
+  CREDENTIALS {
+    credentials {
+      string(credentialsId: 'GEMINI_API_KEY', variable: 'GEMINI_API_KEY')
+      string(credentialsId: 'VECTOR_API_URL', variable: 'VECTOR_API_URL')
+    }
+  }
+
   stages {
     stage('Checkout') {
       steps {
@@ -29,8 +36,8 @@ pipeline {
           docker run -d \
             --name agentic_rag \
             -p 8125:8125 \
-            -v "${WORKSPACE}/.env":".env" \
-            --env-file .env \
+            -e GEMINI_API_KEY="${GEMINI_API_KEY}" \
+            -e VECTOR_API_URL="${VECTOR_API_URL}" \
             -v /var/logs/server2_rag:/var/logs/server2_rag \
             ${IMAGE_NAME}:${IMAGE_TAG}
         '''
