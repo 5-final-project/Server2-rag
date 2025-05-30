@@ -1,4 +1,4 @@
-# src/graph.py 상단 부분 - 메트릭 추가
+# src/graph.py 상단 부분 - 메트릭 임포트 수정
 
 import time
 import logging
@@ -10,9 +10,6 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.graph import CompiledGraph
 from langgraph.types import Send
 
-# Prometheus 메트릭 임포트
-from prometheus_client import Counter, Histogram, Gauge
-
 from src.chunker import chunk_sentences
 from src.evaluator import make_summary_and_query, need_search, evaluate_relevance
 from src.vector_search import search_vector
@@ -23,11 +20,16 @@ setup_json_logger("logs/server2_rag.log", "server2-rag")
 logger = logging.getLogger("server2_rag")
 settings = get_settings()
 
+# 모든 필요한 메트릭 임포트 (추가된 부분)
 from .metrics import (
     team5_llm_calls,
     team5_llm_duration, 
     team5_llm_errors,
-    team5_llm_tokens
+    team5_llm_tokens,
+    team5_pipeline_executions,
+    team5_pipeline_duration,
+    team5_pipeline_errors,
+    team5_pipeline_active_executions
 )
 def log_execution_time(func: Callable) -> Callable:
     """함수 실행 시간을 측정하는 데코레이터"""
