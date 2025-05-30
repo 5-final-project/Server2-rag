@@ -1,19 +1,17 @@
-# src/graph.py
-"""
-랭그래프(LangGraph) 기반 RAG 워크플로우
-- 노드와 엣지를 사용해 유연한 워크플로우 관리
-- 조건부 분기 및 루프를 통한 동적 흐름 제어
-"""
+# src/graph.py 상단 부분 - 메트릭 추가
 
 import time
 import logging
-import uuid  # UUID 모듈 임포트
+import uuid
 from .logging_utils import setup_json_logger
 from typing import Any, Dict, List, TypedDict, Optional, Callable, Union, Literal, Annotated
 from enum import Enum
 from langgraph.graph import StateGraph, END
 from langgraph.graph.graph import CompiledGraph
 from langgraph.types import Send
+
+# Prometheus 메트릭 임포트
+from prometheus_client import Counter, Histogram, Gauge
 
 from src.chunker import chunk_sentences
 from src.evaluator import make_summary_and_query, need_search, evaluate_relevance
@@ -25,18 +23,32 @@ setup_json_logger("logs/server2_rag.log", "server2-rag")
 logger = logging.getLogger("server2_rag")
 settings = get_settings()
 
+# Prometheus 메트릭 정의
+team5_pipeline_executions = Counter('team5_pipeline_executions_total', 'Total pipeline executions', ['service'])
+team5_pipeline_duration = Histogram('team5_pipeline_execution_seconds', 'Pipeline execution time', ['service'])
+team5_pipeline_errors = Counter('team5_pipeline_errors_total', 'Total pipeline errors', ['service', 'stage', 'error_type'])
+team5_pipeline_chunk_processing = Histogram('team5_pipeline_chunk_processing_seconds', 'Time to process each chunk', ['service'])
+team5_pipeline_active_executions = Gauge('team5_pipeline_active_executions', 'Currently active pipeline executions', ['service'])
+
 def log_execution_time(func: Callable) -> Callable:
     """함수 실행 시간을 측정하는 데코레이터"""
     def wrapper(*args, **kwargs):
         start_time = time.time()
+        stage_name = func.__name__
+        service_name = "server2-rag"
+        
         try:
             result = func(*args, **kwargs)
             return result
+        except Exception as e:
+            # 스테이지별 에러 메트릭 기록
+            error_type = type(e).__name__
+            team5_pipeline_errors.labels(service=service_name, stage=stage_name, error_type=error_type).inc()
+            raise
         finally:
             elapsed = time.time() - start_time
             logger.debug(f"{func.__name__} 실행 시간: {elapsed:.2f}초")
     return wrapper
-
 # 상태 정의
 class GraphState(TypedDict):
     """워크플로우 상태를 나타내는 타입 힌트"""
@@ -643,8 +655,14 @@ def run_pipeline(text: str, thread_id: str = None) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: 처리 결과
     """
-    logger.info(f"[run_pipeline] 함수 시작. 입력 텍스트 길이: {len(text)}자, 스레드 ID: {thread_id}") # 함수 시작 로그 추가
-    start_time = time.time()  # Moved BEFORE try
+    logger.info(f"[run_pipeline] 함수 시작. 입력 텍스트 길이: {len(text)}자, 스레드 ID: {thread_id}")
+    start_time = time.time()
+    service_name = "server2-rag"
+    
+    # 파이프라인 실행 메트릭 증가
+    team5_pipeline_executions.labels(service=service_name).inc()
+    team5_pipeline_active_executions.labels(service=service_name).inc()
+    
     try:
         logger.info("파이프라인 실행 시작")
         
@@ -687,8 +705,13 @@ def run_pipeline(text: str, thread_id: str = None) -> Dict[str, Any]:
         api_total_elapsed_time = pipeline_outcome.get("total_elapsed_time", 0)
         pipeline_error = pipeline_outcome.get("error")
 
+        # 파이프라인 완료 메트릭 기록
+        team5_pipeline_duration.labels(service=service_name).observe(api_total_elapsed_time)
+
         if pipeline_error:
             logger.error(f"파이프라인 내에서 오류 발생: {pipeline_error}")
+            # 파이프라인 레벨 에러 메트릭
+            team5_pipeline_errors.labels(service=service_name, stage="pipeline", error_type="execution_error").inc()
             return {
                 "result": api_result, # 오류가 발생했더라도 부분적인 결과가 있을 수 있음
                 "error": pipeline_error,
@@ -705,8 +728,17 @@ def run_pipeline(text: str, thread_id: str = None) -> Dict[str, Any]:
         # 이 블록은 invoke 자체의 실패 또는 그 이전 단계의 예외를 처리
         logger.error(f"run_pipeline 함수 실행 중 심각한 오류 발생: {str(e)}", exc_info=True)
         elapsed_time_on_error = round(time.time() - start_time, 2)
+        
+        # 파이프라인 레벨 에러 메트릭
+        error_type = type(e).__name__
+        team5_pipeline_errors.labels(service=service_name, stage="pipeline", error_type=error_type).inc()
+        team5_pipeline_duration.labels(service=service_name).observe(elapsed_time_on_error)
+        
         return {
             "result": [],
             "error": f"RAG 파이프라인 실행 중 심각한 오류: {str(e)}",
             "total_elapsed_time": elapsed_time_on_error
         }
+    finally:
+        # 활성 파이프라인 수 감소
+        team5_pipeline_active_executions.labels(service=service_name).dec()

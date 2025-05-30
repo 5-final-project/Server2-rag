@@ -23,4 +23,9 @@ protobuf<5
 fastapi>=0.110
 uvicorn[standard]>=0.29
 
+# ─── 로깅 ─────────────────────────────────────────────────────
 python-json-logger
+
+# ─── Prometheus 메트릭 (추가) ──────────────────────────────────
+prometheus-fastapi-instrumentator>=7.0.0
+prometheus-client>=0.20.0

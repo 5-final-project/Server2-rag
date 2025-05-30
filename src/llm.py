@@ -5,8 +5,12 @@ import uuid
 import time
 from .logging_utils import setup_json_logger
 
+# Prometheus 메트릭 임포트
+from prometheus_client import Counter, Histogram
+
 setup_json_logger("logs/server2_rag.log", "server2-rag")
 logger = logging.getLogger("server2_rag")
+
 """
 LLM 호출 모듈
 - summary: Gemini 1.5 Flash (raw text)
@@ -20,6 +24,12 @@ import time
 from typing import Dict, Any
 import google.generativeai as genai
 
+# Prometheus 메트릭 정의
+team5_llm_calls = Counter('team5_llm_calls_total', 'Total LLM API calls', ['service', 'llm_type'])
+team5_llm_duration = Histogram('team5_llm_call_seconds', 'LLM API call duration', ['service', 'llm_type'])
+team5_llm_errors = Counter('team5_llm_errors_total', 'Total LLM API errors', ['service', 'llm_type', 'error_type'])
+team5_llm_tokens = Histogram('team5_llm_tokens_processed', 'Tokens processed by LLM', ['service', 'llm_type', 'token_type'])
+
 # API 키 설정
 API_KEY = os.getenv("GEMINI_API_KEY")
 if API_KEY:
@@ -27,7 +37,6 @@ if API_KEY:
     logger.info(f"GEMINI_API_KEY loaded successfully (first 5 chars: {API_KEY[:5]}).")
 else:
     logger.error("GEMINI_API_KEY not found in environment variables.")
-    # API 키가 없으면 이후 호출이 실패하므로, 여기서 명시적으로 알림
 
 MODEL_SUMMARY = "gemini-1.5-flash"
 MODEL_DECIDE = "gemini-2.5-pro-preview-05-06"
@@ -80,13 +89,35 @@ DECIDE_SYSTEM = """
 
 def _backoff_call(func, *args, retry=3, backoff_factor=1.0, **kwargs):
     """단일 backoff 재시도 공통 로직."""
+    service_name = "server2-rag"
+    llm_type = kwargs.get('llm_type', 'unknown')
+    
     for i in range(retry):
         try:
-            return func(*args, **kwargs)
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            duration = time.time() - start_time
+            
+            # 성공 메트릭 기록
+            team5_llm_calls.labels(service=service_name, llm_type=llm_type).inc()
+            team5_llm_duration.labels(service=service_name, llm_type=llm_type).observe(duration)
+            
+            return result
         except Exception as e:
-            wait = backoff_factor * (2 ** i)
-            logger.warning(f"Gemini call failed ({e}), retrying in {wait}s...")
-            time.sleep(wait)
+            duration = time.time() - start_time if 'start_time' in locals() else 0
+            
+            # 에러 메트릭 기록
+            error_type = type(e).__name__
+            team5_llm_errors.labels(service=service_name, llm_type=llm_type, error_type=error_type).inc()
+            
+            if i < retry - 1:
+                wait = backoff_factor * (2 ** i)
+                logger.warning(f"Gemini call failed ({e}), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                logger.error(f"Gemini call failed after {retry} retries: {e}")
+                raise
+    
     raise RuntimeError("Gemini call failed after retries")
 
 def generate_summary(chunk: str) -> str:
@@ -103,8 +134,16 @@ def generate_summary(chunk: str) -> str:
     prompt = SUMMARY_SYSTEM + "\n\n" + chunk
     
     try:
-        response = _backoff_call(model.generate_content, prompt)
+        response = _backoff_call(model.generate_content, prompt, llm_type="gemini-1.5-flash")
         logger.info(f"[llm.generate_summary] Raw LLM response text (before strip): {response.text!r}")
+        
+        # 토큰 수 추정 및 메트릭 기록
+        input_tokens = len(chunk.split())
+        output_tokens = len(response.text.split()) if response.text else 0
+        
+        team5_llm_tokens.labels(service="server2-rag", llm_type="gemini-1.5-flash", token_type="input").observe(input_tokens)
+        team5_llm_tokens.labels(service="server2-rag", llm_type="gemini-1.5-flash", token_type="output").observe(output_tokens)
+        
         if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
             logger.info(f"[llm.generate_summary] LLM prompt_feedback: {response.prompt_feedback}")
         else:
@@ -115,7 +154,7 @@ def generate_summary(chunk: str) -> str:
             for rating in response.prompt_feedback.safety_ratings:
                 if rating.blocked:
                     logger.warning(f"[llm.generate_summary] Response was blocked due to: {rating.category}. Confidence: {rating.probability}")
-                    return "Error: Content blocked" # Or some other indicator
+                    return "Error: Content blocked"
         
         return response.text.strip()
     except Exception as e:
@@ -130,8 +169,20 @@ def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
     """
     full_prompt = system_prompt + "\n\n" + prompt
     model = genai.GenerativeModel(model_name)
-    response = _backoff_call(model.generate_content, full_prompt)
-    raw_text = response.text # Keep original for logging
+    
+    # 모델 타입 결정
+    llm_type = "gemini-1.5-flash" if "flash" in model_name.lower() else "gemini-2.5-pro"
+    
+    response = _backoff_call(model.generate_content, full_prompt, llm_type=llm_type)
+    raw_text = response.text
+    
+    # 토큰 수 추정 및 메트릭 기록
+    input_tokens = len(full_prompt.split())
+    output_tokens = len(raw_text.split()) if raw_text else 0
+    
+    team5_llm_tokens.labels(service="server2-rag", llm_type=llm_type, token_type="input").observe(input_tokens)
+    team5_llm_tokens.labels(service="server2-rag", llm_type=llm_type, token_type="output").observe(output_tokens)
+    
     logger.info(f"[{model_name}] LLM Raw Response (before strip): {raw_text!r}")
     if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
         logger.info(f"[{model_name}] LLM prompt_feedback: {response.prompt_feedback}")
@@ -143,7 +194,6 @@ def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
         for rating in response.prompt_feedback.safety_ratings:
             if rating.blocked:
                 logger.warning(f"[{model_name}] Response was blocked due to: {rating.category}. Confidence: {rating.probability}")
-                # Decide how to handle blocked content for chat, perhaps return an error in 'answer'
                 return {"thought": "Content blocked by safety filter", "answer": "Error: Content blocked"}
 
     text = raw_text.strip()
@@ -155,29 +205,21 @@ def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
         thought = thought_match.group(1).strip()
 
     # Answer 추출 (Feedback: 전까지 또는 문자열 끝까지)
-    # Thought가 없는 경우도 고려하여, Answer: 태그가 시작점이 될 수 있도록 함.
     answer_match = re.search(r"Answer:(.*?)(Feedback:|$)", text, re.DOTALL | re.IGNORECASE)
     if answer_match:
         answer = answer_match.group(1).strip()
 
     # Feedback 추출 (문자열 끝까지)
-    # Thought나 Answer가 없는 경우도 고려하여, Feedback: 태그가 시작점이 될 수 있도록 함.
     feedback_match = re.search(r"Feedback:(.*)", text, re.DOTALL | re.IGNORECASE)
     if feedback_match:
         feedback = feedback_match.group(1).strip()
 
-    # 만약 태그 없이 일반 텍스트만 반환된 경우, 이를 answer로 간주할지 여부 (현재는 태그 기반 파싱)
-    # 예를 들어, LLM이 프롬프트 형식을 무시하고 답변만 반환한 경우
+    # 만약 태그 없이 일반 텍스트만 반환된 경우, 이를 answer로 간주할지 여부
     if not thought_match and not answer_match and not feedback_match and text:
-        # 태그가 하나도 없다면, 전체 텍스트를 answer로 취급하거나, 혹은 thought로 취급할 수 있음.
-        # 또는, 프롬프트에서 태그 사용을 강제했으므로 오류로 처리할 수도 있음.
-        # 여기서는 일단 answer 로 넣어두지만, 로깅을 통해 이런 케이스를 모니터링 하는 것이 좋음.
         logger.warning(f"[{model_name}] LLM response did not contain expected Thought/Answer/Feedback tags. Full text assigned to answer: {text!r}")
-        answer = text # 또는 thought = text, 혹은 빈 값으로 두고 오류 처리를 유도
+        answer = text
 
     return {"thought": thought, "answer": answer, "feedback": feedback}
-
-
 
 def decide_need_search(chunk: str, summary: str) -> dict:
     logger.info(f"[llm.decide_need_search] 호출됨. Chunk 길이: {len(chunk)}, Summary: {summary}")
@@ -201,25 +243,20 @@ def decide_need_search(chunk: str, summary: str) -> dict:
         logger.error("[llm.decide_need_search] GEMINI_API_KEY is not set. Cannot call LLM.")
         return {
             "thought": "GEMINI_API_KEY is not set. Cannot call LLM.",
-            "answer": "No", # API 키가 없으면 검색 필요 없다고 가정
+            "answer": "No",
             "decision": False,
             "success": False,
             "error": "API key not configured"
         }
 
-    # DECIDE_SYSTEM은 전체 프롬프트 템플릿으로 간주합니다.
-    # chunk와 summary로 포맷팅합니다.
     system_prompt_formatted = DECIDE_SYSTEM.format(chunk=chunk, summary=summary)
     
     try:
-        # call_gemini_chat은 prompt를 필수로 받으므로, 여기서는 빈 문자열을 전달합니다.
-        # 실제 내용은 system_prompt_formatted에 모두 포함되어 있기 때문입니다.
         llm_response = call_gemini_chat(prompt="", system_prompt=system_prompt_formatted, model_name=MODEL_DECIDE)
         
         llm_thought = llm_response.get("thought", "")
-        llm_answer_original = llm_response.get("answer", "") # Yes/No 문자열
+        llm_answer_original = llm_response.get("answer", "")
         
-        # LLM 답변을 정규화하고 불리언으로 변환
         normalized_answer = llm_answer_original.strip().lower()
         calculated_decision = normalized_answer == 'yes'
         
@@ -228,8 +265,8 @@ def decide_need_search(chunk: str, summary: str) -> dict:
 
         return {
             "thought": llm_thought,
-            "answer": llm_answer_original, # 원본 Yes/No 답변 유지
-            "decision": calculated_decision, # 실제 불리언 결정
+            "answer": llm_answer_original,
+            "decision": calculated_decision,
             "success": True,
             "error": None
         }
@@ -237,40 +274,7 @@ def decide_need_search(chunk: str, summary: str) -> dict:
         logger.error(f"[llm.decide_need_search] Error during LLM call or processing: {e}", exc_info=True)
         return {
             "thought": f"Error processing LLM response: {e}",
-            "answer": "No", # 오류 발생 시 검색 안함으로 처리
-            "decision": False,
-            "success": False,
-            "error": str(e)
-        }
-    formatted_prompt = DECIDE_SYSTEM.format(chunk=chunk, summary=summary)
-    
-    try:
-        # call_gemini_chat은 (user_prompt, system_prompt, model_name)을 받습니다.
-        # 여기서는 포맷팅된 전체 프롬프트를 system_prompt로 전달하고, user_prompt는 비워둡니다.
-        response_dict = call_gemini_chat(prompt="", system_prompt=formatted_prompt, model_name=MODEL_DECIDE)
-        
-        thought = response_dict.get("thought", "")
-        # LLM의 답변 문자열을 가져와 공백 제거 및 소문자 변환 후 "yes"와 비교합니다.
-        answer_str_from_llm = response_dict.get("answer", "") # 원본 답변 (logging용)
-        normalized_answer_str = answer_str_from_llm.strip().lower() 
-        
-        decision = normalized_answer_str == "yes"
-        
-        logger.info(f"[llm.decide_need_search] LLM Thought: '{thought}'")
-        logger.info(f"[llm.decide_need_search] LLM Answer (Original): '{answer_str_from_llm}', Normalized: '{normalized_answer_str}', Calculated Decision: {decision}")
-
-        return {
-            "thought": thought,                 # LLM의 생각/근거
-            "answer": answer_str_from_llm,      # LLM의 원본 문자열 답변 ("Yes" 또는 "No")
-            "decision": decision,               # 'yes'일 경우 True, 그 외 False (boolean)
-            "success": True,
-            "error": None
-        }
-    except Exception as e:
-        logger.error(f"[llm.decide_need_search] Error during LLM call or processing: {e}", exc_info=True)
-        return {
-            "thought": f"Error during LLM call: {str(e)}",
-            "answer": "No", # 오류 발생 시 기본적으로 'No'로 처리
+            "answer": "No",
             "decision": False,
             "success": False,
             "error": str(e)

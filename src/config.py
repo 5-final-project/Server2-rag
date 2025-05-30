@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     RELEVANT_K: int = 3
     SCORE_THRESHOLD: float = 0.5
     TIMEOUT_SEC: int = 300         # 전 파이프라인 5 분
+    
+    # Prometheus 메트릭 관련 설정
+    ENABLE_METRICS: bool = True    # 메트릭 활성화 여부
+    METRICS_PORT: int = 8125       # 메트릭 포트 (FastAPI 서버와 동일)
+    SERVICE_NAME: str = "server2-rag"  # 서비스 이름 (메트릭 라벨용)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
