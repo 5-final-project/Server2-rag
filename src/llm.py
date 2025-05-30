@@ -134,7 +134,7 @@ def generate_summary(chunk: str) -> str:
     prompt = SUMMARY_SYSTEM + "\n\n" + chunk
     
     try:
-        response = _backoff_call(model.generate_content, prompt, llm_type="gemini-1.5-flash")
+        response = _backoff_call(model.generate_content, prompt)
         logger.info(f"[llm.generate_summary] Raw LLM response text (before strip): {response.text!r}")
         
         # 토큰 수 추정 및 메트릭 기록
@@ -173,7 +173,7 @@ def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
     # 모델 타입 결정
     llm_type = "gemini-1.5-flash" if "flash" in model_name.lower() else "gemini-2.5-pro"
     
-    response = _backoff_call(model.generate_content, full_prompt, llm_type=llm_type)
+    response = _backoff_call(model.generate_content, full_prompt)
     raw_text = response.text
     
     # 토큰 수 추정 및 메트릭 기록
