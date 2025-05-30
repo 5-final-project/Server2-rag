@@ -18,12 +18,12 @@ logger = logging.getLogger("server2_rag")
 settings = get_settings()
 _API = settings.VECTOR_API_URL.rstrip("/") + "/search"
 
-# Prometheus 메트릭 정의
-team5_vector_searches = Counter('team5_vector_searches_total', 'Total vector searches', ['service'])
-team5_vector_search_duration = Histogram('team5_vector_search_seconds', 'Vector search duration', ['service'])
-team5_vector_search_errors = Counter('team5_vector_search_errors_total', 'Total vector search errors', ['service', 'error_type'])
-team5_vector_search_results = Histogram('team5_vector_search_results_count', 'Number of results returned', ['service'])
-
+from .api import (
+    team5_vector_searches,
+    team5_vector_search_duration,
+    team5_vector_search_errors,
+    team5_vector_search_results
+)
 def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, Any]], float]:
     """
     벡터 검색 API를 호출하여 관련 문서를 검색합니다.

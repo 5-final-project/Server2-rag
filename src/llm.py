@@ -24,12 +24,12 @@ import time
 from typing import Dict, Any
 import google.generativeai as genai
 
-# Prometheus 메트릭 정의
-team5_llm_calls = Counter('team5_llm_calls_total', 'Total LLM API calls', ['service', 'llm_type'])
-team5_llm_duration = Histogram('team5_llm_call_seconds', 'LLM API call duration', ['service', 'llm_type'])
-team5_llm_errors = Counter('team5_llm_errors_total', 'Total LLM API errors', ['service', 'llm_type', 'error_type'])
-team5_llm_tokens = Histogram('team5_llm_tokens_processed', 'Tokens processed by LLM', ['service', 'llm_type', 'token_type'])
-
+from .api import (
+    team5_llm_calls, 
+    team5_llm_duration, 
+    team5_llm_errors, 
+    team5_llm_tokens
+)
 # API 키 설정
 API_KEY = os.getenv("GEMINI_API_KEY")
 if API_KEY:
