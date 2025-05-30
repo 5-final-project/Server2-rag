@@ -29,3 +29,6 @@ python-json-logger
 # ─── Prometheus 메트릭 (추가) ──────────────────────────────────
 prometheus-fastapi-instrumentator>=7.0.0
 prometheus-client>=0.20.0
+
+# ─── GPU 모니터링 (추가) ──────────────────────────────────────
+nvidia-ml-py3
