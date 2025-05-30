@@ -18,7 +18,7 @@ logger = logging.getLogger("server2_rag")
 settings = get_settings()
 _API = settings.VECTOR_API_URL.rstrip("/") + "/search"
 
-from .api import (
+from .metrics import (
     team5_vector_searches,
     team5_vector_search_duration,
     team5_vector_search_errors,

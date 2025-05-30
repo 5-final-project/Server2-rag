@@ -24,7 +24,7 @@ import time
 from typing import Dict, Any
 import google.generativeai as genai
 
-from .api import (
+from .metrics import (
     team5_llm_calls, 
     team5_llm_duration, 
     team5_llm_errors, 

@@ -23,13 +23,12 @@ setup_json_logger("logs/server2_rag.log", "server2-rag")
 logger = logging.getLogger("server2_rag")
 settings = get_settings()
 
-# Prometheus 메트릭 정의
-team5_pipeline_executions = Counter('team5_pipeline_executions_total', 'Total pipeline executions', ['service'])
-team5_pipeline_duration = Histogram('team5_pipeline_execution_seconds', 'Pipeline execution time', ['service'])
-team5_pipeline_errors = Counter('team5_pipeline_errors_total', 'Total pipeline errors', ['service', 'stage', 'error_type'])
-team5_pipeline_chunk_processing = Histogram('team5_pipeline_chunk_processing_seconds', 'Time to process each chunk', ['service'])
-team5_pipeline_active_executions = Gauge('team5_pipeline_active_executions', 'Currently active pipeline executions', ['service'])
-
+from .metrics import (
+    team5_llm_calls,
+    team5_llm_duration, 
+    team5_llm_errors,
+    team5_llm_tokens
+)
 def log_execution_time(func: Callable) -> Callable:
     """함수 실행 시간을 측정하는 데코레이터"""
     def wrapper(*args, **kwargs):
