@@ -749,7 +749,7 @@ def run_pipeline(text: str, thread_id: str = None) -> Dict[str, Any]:
         
         logger.info(f"워크플로우 실행 시작. Thread ID: {thread_id}")
         config = {
-            "recursion_limit": 150, # 필요시 조정
+            "recursion_limit": settings.LANGRAPH_RECURSION_LIMIT,  # 설정 파일에서 값 가져오기
             "configurable": {"thread_id": thread_id}
         }
         

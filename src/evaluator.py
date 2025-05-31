@@ -234,12 +234,11 @@ def evaluate_documents(
     
     # 검색 결과가 없으면 빈 결과와 재시도 필요 반환
     if not documents:
-        return [], {"feedback": "검색 결과가 없습니다. 다른 쿼리로 시도해보세요."}, True
+        return [], {"feedback": "검색 결과가 없습니다. 다른 쿼리로 시도해보세요."}, retry_count < settings.MAX_RETRIES
     
     relevant_docs = []
     retry_needed = False
     final_feedback = ""
-    max_retries = settings.MAX_RETRIES  # settings에서 MAX_RETRIES를 가져옴
     
     try:
         for doc in documents:
@@ -263,25 +262,26 @@ def evaluate_documents(
                 final_feedback = f"문서 평가 중 오류가 발생했습니다. 다시 시도해주세요. 오류: {str(e)}"
     
         # 결과 요약
-        if retry_count >= max_retries:
-            retry_needed = False  # 최대 재시도 횟수 초과 시 더 이상 재시도하지 않음
-            logger.info(f"최대 재시도 횟수({max_retries})에 도달했습니다. 더 이상 재시도하지 않습니다.")
-        
-        # 관련 문서가 없고, 검색 결과가 있으며, 재시도 가능한 경우
-        should_retry = (len(relevant_docs) == 0 and len(documents) > 0 and retry_count < max_retries)
+        if retry_count >= settings.MAX_RETRIES:
+            # 최대 재시도 횟수 초과 시 더 이상 재시도하지 않음
+            should_retry = False
+            logger.info(f"최대 재시도 횟수({settings.MAX_RETRIES})에 도달했습니다. 더 이상 재시도하지 않습니다.")
+        else:
+            # 관련 문서가 없고, 검색 결과가 있는 경우 재시도
+            should_retry = (len(relevant_docs) == 0 and len(documents) > 0)
         
         metadata = {
             "evaluated": len(documents),
             "relevant": len(relevant_docs),
             "feedback": final_feedback or "관련 문서를 찾지 못했습니다. 다른 키워드로 검색해보세요.",
             "retry_count": retry_count,
-            "max_retries": max_retries
+            "max_retries": settings.MAX_RETRIES
         }
         
-        logger.info(f"[evaluate_documents] 청크 ID {retry_count} (인덱스 {retry_count}): 평가 완료. 관련 문서 수: {len(relevant_docs)}/{len(documents)}. 재시도 최종 결정: {should_retry} (근거: 관련문서 없음? {len(relevant_docs) == 0}, 검색된문서 있음? {len(documents) > 0}, 재시도 가능횟수 남음? {retry_count < max_retries}). 피드백 (앞 50자): {final_feedback[:50]}...")
+        logger.info(f"[evaluate_documents] 청크 ID {retry_count} (인덱스 {retry_count}): 평가 완료. 관련 문서 수: {len(relevant_docs)}/{len(documents)}. 재시도 최종 결정: {should_retry} (근거: 관련문서 없음? {len(relevant_docs) == 0}, 검색된문서 있음? {len(documents) > 0}, 재시도 가능횟수 남음? {retry_count < settings.MAX_RETRIES}). 피드백 (앞 50자): {final_feedback[:50] if final_feedback else ''}...")
         
         return relevant_docs, metadata, should_retry
         
     except Exception as e:
         logger.error(f"전체 문서 평가 과정 중 오류: {str(e)}")
-        return [], {"feedback": f"문서 평가 중 오류가 발생했습니다: {str(e)}"}, True
+        return [], {"feedback": f"문서 평가 중 오류가 발생했습니다: {str(e)}"}, retry_count < settings.MAX_RETRIES

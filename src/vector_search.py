@@ -208,7 +208,7 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
             
             # 메트릭 기록
             team5_vector_search_duration.labels(service=service_name).observe(elapsed)
-            team5_vector_search_results.labels(service=service_name).observe(len(formatted_results))
+            team5_vector_search_results.labels(service=service_name).observe(len(results))
             
             logger.info({
                 "event": "vector_search_success",
@@ -217,7 +217,7 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
                 "num_results": len(results),
                 "processed_results_sample": str(results[:1])[:200] if results else "[]"
             })
-            return formatted_results, elapsed
+            return results, elapsed
             
     except httpx.HTTPStatusError as e:
         elapsed = time.time() - start
