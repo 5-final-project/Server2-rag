@@ -4,6 +4,7 @@ import re
 import uuid
 import time
 from .logging_utils import setup_json_logger
+from src.config import get_settings
 
 # Prometheus 메트릭 임포트
 from prometheus_client import Counter, Histogram
@@ -14,7 +15,7 @@ logger = logging.getLogger("server2_rag")
 """
 LLM 호출 모듈
 - summary: Gemini 1.5 Flash (raw text)
-- decide/relevance: Gemini 2.5 Pro Preview (chat-style with Thought/Answer)
+- decide/relevance: 설정에서 지정된 모델 (chat-style with Thought/Answer)
 - 전역 backoff 재시도 로직
 """
 
@@ -30,28 +31,35 @@ from .metrics import (
     team5_llm_errors, 
     team5_llm_tokens
 )
+
+# 설정 가져오기
+settings = get_settings()
+
 # API 키 설정
-API_KEY = os.getenv("GEMINI_API_KEY")
+API_KEY = settings.GEMINI_API_KEY
 if API_KEY:
     genai.configure(api_key=API_KEY)
     logger.info(f"GEMINI_API_KEY loaded successfully (first 5 chars: {API_KEY[:5]}).")
 else:
     logger.error("GEMINI_API_KEY not found in environment variables.")
 
-MODEL_SUMMARY = "gemini-1.5-flash"
-MODEL_DECIDE = "gemini-2.5-pro-preview-05-06"
+MODEL_SUMMARY = "gemini-1.5-flash"  # 요약용 모델은 고정
+MODEL_DECIDE = settings.LLM_MODEL   # 결정/평가용 모델은 설정에서 가져옴
 
 # 요약 전용 시스템 프롬프트
 SUMMARY_SYSTEM = (
-    """You are an expert assistant that creates concise, search-optimized summaries for RAG systems. """
-    """Follow these instructions carefully:"""
-    """1. Analyze the meeting chunk and identify the main topics, decisions, and action items."""
-    """2. Write 1-2 clear, complete sentences that summarize the key information."""
-    """3. Focus on entities, relationships, and specific details that would be useful for retrieval."""
-    """4. Use natural language that matches how users might search for this information."""
-    """5. Keep it concise but informative (20-30 words max)."""
-    """6. Write in Korean if the input is in Korean, otherwise in English."""
-    """\n\nMeeting Chunk:\n"""
+    """당신은 회의 내용을 명확하고 검색하기 쉬운 형태로 요약하는 전문가입니다. 
+    
+다음 지침을 따라 주세요:
+1. 회의 청크를 분석하여 주요 주제, 결정사항, 액션 아이템을 파악하세요.
+2. 핵심 정보를 포함하는 2-3개의 완전한 문장으로 요약하세요. 단어 나열이 아닌 문장 형태로 작성하세요.
+3. 엔티티, 관계, 구체적인 세부 사항 등 검색에 유용한 정보에 중점을 두세요.
+4. 사용자가 이 정보를 검색할 때 사용할 만한 자연스러운 언어를 사용하세요.
+5. 간결하면서도 정보가 풍부하게 작성하세요(60-80단어 이내).
+6. 입력이 한국어인 경우 한국어로, 그렇지 않으면 영어로 작성하세요.
+7. 중요한 이름, 날짜, 수치 등의 구체적인 정보를 포함하세요.
+
+회의 청크:"""
 )
 
 # 검색 필요성 판단을 위한 시스템 프롬프트
@@ -90,7 +98,9 @@ DECIDE_SYSTEM = """
 def _backoff_call(func, *args, retry=3, backoff_factor=1.0, **kwargs):
     """단일 backoff 재시도 공통 로직."""
     service_name = "server2-rag"
-    llm_type = kwargs.get('llm_type', 'unknown')
+    
+    # 메트릭 기록용으로 llm_type 추출하고 kwargs에서 제거
+    llm_type = kwargs.pop('llm_type', 'unknown') if 'llm_type' in kwargs else 'unknown'
     
     for i in range(retry):
         try:
@@ -121,21 +131,40 @@ def _backoff_call(func, *args, retry=3, backoff_factor=1.0, **kwargs):
     raise RuntimeError("Gemini call failed after retries")
 
 def generate_summary(chunk: str) -> str:
-    logger.info(f"[llm.generate_summary] 호출됨. Chunk 길이: {len(chunk)}")
-    logger.info(f"[llm.generate_summary] Attempting to use configured API_KEY (first 5 chars if set): {API_KEY[:5] if API_KEY else 'Not set'}")
+    trace_id = str(uuid.uuid4())
+    logger.info({
+        "event": "llm_summary_start",
+        "trace_id": trace_id,
+        "chunk_length": len(chunk),
+        "chunk_preview": chunk[:100] + ("..." if len(chunk) > 100 else ""),
+        "api_key_set": bool(API_KEY)  # API 키 설정 여부 로깅
+    })
+    
     """
-    요약 전용: raw text completion으로 comma-separated 키워드 추출
+    텍스트 청크에서 문장 형태의 요약 생성
     """
     if not API_KEY:
-        logger.error("[llm.generate_summary] Gemini API key is not configured. Skipping API call.")
-        return ""
+        error_msg = "Gemini API key is not configured."
+        logger.error({
+            "event": "llm_summary_error",
+            "trace_id": trace_id,
+            "error": error_msg
+        })
+        # API 키가 없을 때 예외 발생
+        raise ValueError(error_msg)
     
     model = genai.GenerativeModel(MODEL_SUMMARY)
     prompt = SUMMARY_SYSTEM + "\n\n" + chunk
     
     try:
-        response = _backoff_call(model.generate_content, prompt)
-        logger.info(f"[llm.generate_summary] Raw LLM response text (before strip): {response.text!r}")
+        logger.info({
+            "event": "llm_summary_api_call",
+            "trace_id": trace_id,
+            "model": MODEL_SUMMARY,
+            "prompt_length": len(prompt)
+        })
+        
+        response = _backoff_call(model.generate_content, prompt, llm_type="gemini-1.5-flash")
         
         # 토큰 수 추정 및 메트릭 기록
         input_tokens = len(chunk.split())
@@ -145,21 +174,56 @@ def generate_summary(chunk: str) -> str:
         team5_llm_tokens.labels(service="server2-rag", llm_type="gemini-1.5-flash", token_type="output").observe(output_tokens)
         
         if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
-            logger.info(f"[llm.generate_summary] LLM prompt_feedback: {response.prompt_feedback}")
-        else:
-            logger.info("[llm.generate_summary] No prompt_feedback attribute or it's empty.")
+            logger.info({
+                "event": "llm_summary_feedback",
+                "trace_id": trace_id,
+                "prompt_feedback": str(response.prompt_feedback)
+            })
         
         # Check for blocking reasons specifically if text is empty
         if not response.text.strip() and hasattr(response, 'prompt_feedback') and response.prompt_feedback:
             for rating in response.prompt_feedback.safety_ratings:
                 if rating.blocked:
-                    logger.warning(f"[llm.generate_summary] Response was blocked due to: {rating.category}. Confidence: {rating.probability}")
-                    return "Error: Content blocked"
+                    block_msg = f"Content blocked by safety filter: {rating.category}"
+                    logger.warning({
+                        "event": "llm_summary_blocked",
+                        "trace_id": trace_id,
+                        "category": str(rating.category),
+                        "confidence": str(rating.probability)
+                    })
+                    # 컨텐츠가 차단된 경우 예외 발생
+                    raise ValueError(block_msg)
         
-        return response.text.strip()
+        summary = response.text.strip()
+        
+        # 빈 요약이 반환된 경우 예외 발생
+        if not summary:
+            empty_msg = "LLM returned empty summary"
+            logger.warning({
+                "event": "llm_summary_empty",
+                "trace_id": trace_id,
+                "message": empty_msg
+            })
+            raise ValueError(empty_msg)
+        
+        logger.info({
+            "event": "llm_summary_success",
+            "trace_id": trace_id,
+            "summary_length": len(summary),
+            "summary": summary
+        })
+        
+        return summary
     except Exception as e:
-        logger.error(f"[llm.generate_summary] Error during Gemini API call: {e}", exc_info=True)
-        return "Error: API call failed"
+        logger.error({
+            "event": "llm_summary_error",
+            "trace_id": trace_id,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, exc_info=True)
+        
+        # 예외를 그대로 전파
+        raise
 
 def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
     logger.info(f"[llm.call_gemini_chat] 호출됨. Model: {model_name}, System Prompt 길이: {len(system_prompt)}, Prompt 길이: {len(prompt)}")
@@ -173,7 +237,7 @@ def call_gemini_chat(prompt: str, system_prompt: str, model_name: str) -> dict:
     # 모델 타입 결정
     llm_type = "gemini-1.5-flash" if "flash" in model_name.lower() else "gemini-2.5-pro"
     
-    response = _backoff_call(model.generate_content, full_prompt)
+    response = _backoff_call(model.generate_content, full_prompt, llm_type=llm_type)
     raw_text = response.text
     
     # 토큰 수 추정 및 메트릭 기록

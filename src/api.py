@@ -146,6 +146,16 @@ async def process(req: ProcessRequest, request: Request) -> Dict[str, Any]:
             "result_keys": list(pipeline_result.keys()) if isinstance(pipeline_result, dict) else []
         })
         
+        # 응답 형식 수정 - chunk_en을 chunk로 변경
+        if isinstance(pipeline_result, dict) and "result" in pipeline_result:
+            for chunk_result in pipeline_result["result"]:
+                if "chunk" in chunk_result:
+                    # 이미 올바른 키가 있는 경우
+                    pass
+                elif "chunk_en" in chunk_result:
+                    # chunk_en을 chunk로 변경
+                    chunk_result["chunk"] = chunk_result.pop("chunk_en")
+        
         return pipeline_result
         
     except Exception as e:

@@ -2,9 +2,22 @@ services:
   pipeline:
     build: .
     container_name: agentic_rag
-    env_file:
-      - .env
+    environment:
+      - GEMINI_API_KEY=AIzaSyCRpTxu3FRgreewYtzoQ4-tINkkf6jaWzU
+      - VECTOR_API_URL=https://team5opensearch.ap.loclx.io
+      - MAX_RETRIES_PER_CHUNK=1
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=64
+      - MAX_RETRY=2
+      - VECTOR_TOP_K=5
+      - RELEVANT_K=3
+      - SCORE_THRESHOLD=0.5
+      - TIMEOUT_SEC=300
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8125
+      - SERVICE_NAME=server2-rag
     volumes:
       - ./data:/app/data          # 임시 저장소
+      - ./logs:/var/logs/server2_rag  # 로그 디렉토리 마운트 추가
     ports:
       - "8125:8125"               # FastAPI

@@ -11,7 +11,7 @@ from langgraph.graph.graph import CompiledGraph
 from langgraph.types import Send
 
 from src.chunker import chunk_sentences
-from src.evaluator import make_summary_and_query, need_search, evaluate_relevance
+from src.evaluator import make_summary_and_query, need_search, evaluate_documents
 from src.vector_search import search_vector
 from src.config import get_settings
 
@@ -73,30 +73,38 @@ class GraphState(TypedDict):
 # 노드 정의
 def create_chunks(state: GraphState) -> Dict[str, Any]:
     """텍스트를 청크로 분할하고 초기 상태를 설정합니다."""
-    text_input = state.get("text", "").strip()
-    logger.info(f"텍스트 청킹 시작. 원본 텍스트 길이: {len(text_input)}자")
-
-    if not text_input:
-        logger.warning("입력된 텍스트가 비어 있습니다.")
-        return {
-            **state, # 이전 상태 유지
-            "text": text_input,
-            "chunks": [],
-            "total_chunks": 0,
-            "current_chunk_index": 0,
-            "results": [],
-            "has_next": False,
-            "error": "입력 텍스트 없음"
-        }
-
+    start_time = time.time()
+    service_name = "server2-rag"
+    node_name = "create_chunks"
+    
     try:
+        text_input = state.get("text", "").strip()
+        logger.info(f"텍스트 청킹 시작. 원본 텍스트 길이: {len(text_input)}자")
+
+        if not text_input:
+            logger.warning("입력된 텍스트가 비어 있습니다.")
+            result = {
+                **state, # 이전 상태 유지
+                "text": text_input,
+                "chunks": [],
+                "total_chunks": 0,
+                "current_chunk_index": 0,
+                "results": [],
+                "has_next": False,
+                "error": "입력 텍스트 없음"
+            }
+            # 노드 실행 실패 기록
+            from src.metrics import track_node_execution
+            track_node_execution(service_name, node_name, time.time() - start_time, success=False)
+            return result
+
         chunk_list = chunk_sentences(text_input)
         logger.info(f"[create_chunks] 총 {len(chunk_list)}개의 청크 생성됨.")
         
         for i, c in enumerate(chunk_list):
             logger.debug(f"청크 {i+1} (길이: {len(c)}자): {c[:100]}...")
 
-        return {
+        result = {
             **state, # 이전 상태 유지
             "text": text_input,
             "chunks": chunk_list,
@@ -115,12 +123,23 @@ def create_chunks(state: GraphState) -> Dict[str, Any]:
             "similar_documents": [],
             "error": None
         }
+        
+        # 노드 실행 성공 기록
+        from src.metrics import track_node_execution
+        track_node_execution(service_name, node_name, time.time() - start_time, success=True)
+        return result
+        
     except Exception as e:
         error_msg = f"청크 생성 중 오류 발생: {str(e)}"
         logger.error(error_msg, exc_info=True)
+        
+        # 노드 실행 실패 기록
+        from src.metrics import track_node_execution
+        track_node_execution(service_name, node_name, time.time() - start_time, success=False)
+        
         return {
             **state, # 이전 상태 유지
-            "text": text_input,
+            "text": text_input if 'text_input' in locals() else "",
             "chunks": [],
             "total_chunks": 0,
             "current_chunk_index": 0,
@@ -173,31 +192,63 @@ def generate_summary(state: GraphState) -> Dict[str, Any]:
     """요약 및 쿼리 생성"""
     chunk = state.get("chunk", "")
     if not chunk:
+        logger.warning("빈 청크가 전달되어 요약을 생성할 수 없습니다.")
         return {
             "chunk": "",
             "summary": {"thought": "", "answer": "", "query": ""},
             "entry": state.get("entry", {"start_time": time.time()}),
             "has_next": False
         }
+    
+    # evaluator의 make_summary_and_query 호출
+    logger.info(f"[generate_summary] 청크 (앞 50자): {chunk[:50]}... 에 대한 요약 생성 시작")
+    
+    try:
+        # 이제 make_summary_and_query 함수는 예외 발생 시 상위로 전파함
+        summ = make_summary_and_query(chunk)
         
-    summ = make_summary_and_query(chunk)
-    return {
-        "chunk": chunk,
-        "chunks": state.get("chunks", []),
-        "current_chunk_index": state.get("current_chunk_index", 0),
-        "results": state.get("results", []),
-        "has_next": state.get("has_next", False),
-        "summary": {
-            "thought": summ.get("thought", ""),  # make_summary_and_query의 반환값에 현재 thought가 없으므로, 필요시 evaluator 수정 필요
-            "answer": summ.get("summary_answer", ""), # 키 수정
-            "query": summ.get("query", []) # 기본값을 빈 리스트로 수정
-        },
-        "entry": {
-            **state.get("entry", {"start_time": time.time()}),
-            "summary_thought": summ.get("thought", ""), # make_summary_and_query의 반환값에 현재 thought가 없으므로, 필요시 evaluator 수정 필요
-            "summary_answer": summ.get("summary_answer", "") # 키 수정
+        # 요약 로깅
+        summary_text = summ.get("summary_answer", "")
+        query_keywords = summ.get("query", [])
+        
+        logger.info({
+            "event": "summary_generated",
+            "chunk_id": state.get("entry", {}).get("chunk_id", "unknown"),
+            "summary": summary_text,
+            "summary_length": len(summary_text),
+            "query_keywords": query_keywords,
+            "keyword_count": len(query_keywords)
+        })
+        
+        return {
+            "chunk": chunk,
+            "chunks": state.get("chunks", []),
+            "current_chunk_index": state.get("current_chunk_index", 0),
+            "results": state.get("results", []),
+            "has_next": state.get("has_next", False),
+            "summary": {
+                "thought": summ.get("thought", ""),
+                "answer": summ.get("summary_answer", ""),
+                "query": summ.get("query", [])
+            },
+            "entry": {
+                **state.get("entry", {"start_time": time.time()}),
+                "summary_thought": summ.get("thought", ""),
+                "summary_answer": summ.get("summary_answer", "")
+            }
         }
-    }
+    except Exception as e:
+        # 오류 발생 시 시스템 중단을 위해 예외를 다시 발생시킴
+        error_msg = f"요약 생성 중 치명적 오류 발생: {str(e)}"
+        logger.error({
+            "event": "summary_generation_critical_error",
+            "chunk_id": state.get("entry", {}).get("chunk_id", "unknown"),
+            "error": error_msg,
+            "error_type": type(e).__name__
+        }, exc_info=True)
+        
+        # 오류를 다시 발생시켜 시스템을 중단시킴
+        raise RuntimeError(error_msg) from e
 
 def decide_search(state: GraphState) -> Dict[str, Any]:
     """검색 필요 여부 결정"""
@@ -218,7 +269,7 @@ def decide_search(state: GraphState) -> Dict[str, Any]:
     }
 
     if not chunk or not summary_answer:
-        logger.warning("[decide_search] 청크 또는 요약 답변이 비어 있어 검색 필요 여부 판단을 건너<0xEB><0x9A><0x84>니다. 'decision'을 False로 설정합니다.")
+        logger.warning("[decide_search] 청크 또는 요약 답변이 비어 있어 검색 필요 여부 판단을 건너뛰었습니다. 'decision'을 False로 설정합니다.")
         return {
             **common_state_updates,
             "decision": {"thought": "입력 부족", "answer": "No", "decision": False, "success": True, "error": None}, # success: True, error: None 으로 명시
@@ -286,101 +337,66 @@ def search_documents(state: GraphState) -> Dict[str, Any]:
     
     return {"similar_documents": results}
 
-def evaluate_documents(state: GraphState) -> Dict[str, Any]:
+def evaluate_documents_node(state: GraphState) -> Dict[str, Any]:
     """
-    문서 적합성 평가 및 재시도 로직
+    검색된 문서 관련성 평가 및 재시도 결정
+    """
+    start_time = time.time()
+    service_name = "server2-rag"
+    node_name = "evaluate_relevance"
     
-    Returns:
-        Dict: {
-            "relevant_docs": 적합한 문서 목록,
-            "should_retry": 재시도 필요 여부,
-            "feedback": 재시도 시 개선을 위한 피드백
-        }
-    """
+    chunk = state.get("chunk", "")
+    summary = state.get("summary", {}).get("answer", "")
+    documents = state.get("similar_documents", [])
+    retry_count = state.get("retry_count", 0)
+    
+    logger.info(f"문서 평가 시작. 평가할 문서 수: {len(documents)}")
+    
     try:
-        if not state.get("similar_documents"):
-            return {
-                **state,
-                "relevant_docs": [],
-                "should_retry": False,
-                "feedback": "검색된 문서가 없습니다."
-            }
+        # evaluator.py의 evaluate_documents 함수 호출
+        relevant_docs, metadata, should_retry = evaluate_documents(
+            chunk=chunk,
+            summary=summary,
+            documents=documents,
+            retry_count=retry_count
+        )
         
-        chunk = state.get("chunk", "")
-        summary = state.get("summary", {}).get("answer", "")
-        evaluated_docs = []
-        relevant_docs = []
-        all_feedback = []
+        # 평가 결과 로깅
+        logger.info(f"[evaluate_documents] 청크 ID {state.get('entry', {}).get('chunk_id', 0)} (인덱스 {retry_count}): 평가 완료. 관련 문서 수: {len(relevant_docs)}/{len(documents)}. 재시도 최종 결정: {should_retry}. 피드백 (앞 50자): {metadata.get('feedback', '')[:50]}...")
         
-        logger.info(f"문서 평가 시작. 평가할 문서 수: {len(state['similar_documents'])}")
+        # 메트릭 기록 - 검색 관련성 통계
+        from src.metrics import update_search_relevance_metrics
+        update_search_relevance_metrics(service_name, len(relevant_docs), len(documents))
         
-        # 모든 문서 평가
-        for doc in state["similar_documents"]:
-            try:
-                eval_result = evaluate_relevance(chunk, summary, doc)
-                
-                doc_info = {
-                    "page_content": doc.get("page_content", ""),
-                    "metadata": doc.get("metadata", {}),
-                    "score": doc.get("score", 0),
-                    "is_relevant": eval_result.get("relevant", False),
-                    "feedback": eval_result.get("feedback", "")
-                }
-                
-                evaluated_docs.append(doc_info)
-                
-                if doc_info["is_relevant"]:
-                    relevant_docs.append(doc_info)
-                
-                if eval_result.get("feedback"):
-                    all_feedback.append(eval_result["feedback"])
-                    
-            except Exception as e:
-                logger.error(f"문서 평가 중 오류 발생: {str(e)}", exc_info=True)
-                continue
+        # 재시도 추적
+        from src.metrics import track_retry
+        if should_retry:
+            is_max_reached = retry_count >= settings.MAX_RETRIES - 1
+            track_retry(service_name, "evaluate_documents", is_max_reached)
         
-        # 재시도 필요 여부 판단
-        # 1. 관련 문서가 없고, 검색된 문서가 있는 경우
-        # 2. 현재 재시도 횟수가 최대 재시도 횟수 미만인 경우
-        current_retry_count = state.get("retry_count", 0)
-        max_retries = settings.MAX_RETRIES_PER_CHUNK
-        current_idx = state.get("current_chunk_index", -1)
-        logger.info(f"[evaluate_documents] 청크 ID {state.get('entry',{}).get('chunk_id','N/A')} (인덱스 {current_idx}): 평가 시작. 현재 재시도: {current_retry_count}/{max_retries}. 평가할 문서 수: {len(state.get('similar_documents', []))}")
-        
-        can_retry = (not relevant_docs and evaluated_docs)
-        should_retry_final = can_retry and (current_retry_count < max_retries)
-        
-        if can_retry and not should_retry_final:
-            logger.warning(f"청크 {state.get('entry',{}).get('chunk_id','N/A')} 최대 재시도 ({max_retries}회) 도달. 재시도 중단.")
-
-        # 고유한 피드백만 유지
-        unique_feedback = []
-        for fb in all_feedback:
-            if fb and fb not in unique_feedback:
-                unique_feedback.append(fb)
-        
-        feedback_str = "; ".join(unique_feedback) if unique_feedback else ""
-        if not feedback_str and should_retry_final:
-            feedback_str = "관련 문서를 찾지 못했습니다. 요약 또는 검색어를 개선하여 재시도합니다."
-        
-        logger.info(f"[evaluate_documents] 청크 ID {state.get('entry',{}).get('chunk_id','N/A')} (인덱스 {current_idx}): 평가 완료. 관련 문서 수: {len(relevant_docs)}/{len(evaluated_docs)}. 재시도 최종 결정: {should_retry_final} (근거: 관련문서 없음? {not relevant_docs}, 검색된문서 있음? {bool(evaluated_docs)}, 재시도 가능횟수 남음? {current_retry_count < max_retries}). 피드백 (앞 50자): {feedback_str[:50]}...")
+        # 노드 실행 성공 기록
+        from src.metrics import track_node_execution
+        track_node_execution(service_name, node_name, time.time() - start_time, success=True)
         
         return {
             **state,
-            "relevant_docs": relevant_docs,
-            "should_retry": should_retry_final,
-            "feedback": feedback_str,
-            "similar_documents": evaluated_docs # 평가된 모든 문서 정보 (is_relevant 포함)
+            "similar_documents": relevant_docs,
+            "should_retry": should_retry,
+            "feedback": metadata.get("feedback", "관련 문서를 찾지 못했습니다.")
         }
-        
     except Exception as e:
-        error_msg = f"문서 평가 중 오류 발생: {str(e)}"
+        error_msg = f"문서 평가 중 오류: {str(e)}"
         logger.error(error_msg, exc_info=True)
+        
+        # 노드 실행 실패 기록
+        from src.metrics import track_node_execution
+        track_node_execution(service_name, node_name, time.time() - start_time, success=False)
+        
+        # 오류 발생 시 원래 문서 목록 유지하고 재시도 플래그 설정
         return {
             **state,
-            "relevant_docs": [],
-            "should_retry": False,
-            "feedback": error_msg,
+            "should_retry": True,
+            "feedback": f"문서 평가 중 오류 발생: {str(e)}",
             "error": error_msg
         }
 
@@ -407,13 +423,14 @@ def update_results(state: GraphState) -> Dict[str, Any]:
         logger.info(f"[update_results] 청크 ID {entry.get('chunk_id','N/A')} (인덱스 {current_index}): 결과 업데이트 시작. 재시도 플래그: {should_retry_flag}, 현재 재시도 카운트(상태): {current_retry_count_from_state}")
         
         # 평가 결과에서 관련 문서 추출
-        relevant_docs = state.get("relevant_docs", [])
+        relevant_docs = state.get("similar_documents", [])
         should_retry = state.get("should_retry", False)
         feedback = state.get("feedback", "")
         
-        # 현재 청크에 대한 결과 생성
+        # 현재 청크에 대한 결과 생성 
+        # 요구된 형식에 맞게 chunk 필드로 통일
         result_entry = {
-            "chunk": current_chunk,
+            "chunk": current_chunk,  # 영어로 번역된 값이 필요할 경우 이 부분을 추가 처리
             "summary": state.get("summary", {}).get("answer", ""),
             "similar_documents": [
                 {
@@ -534,7 +551,7 @@ def create_rag_workflow() -> CompiledGraph:
     workflow.add_node("generate_summary", generate_summary)
     workflow.add_node("decide_search", decide_search)  # 검색 결정 노드 추가
     workflow.add_node("search_documents", search_documents)
-    workflow.add_node("evaluate_relevance", evaluate_documents)  # 함수명 수정 (evaluate_relevance -> evaluate_documents)
+    workflow.add_node("evaluate_relevance", evaluate_documents_node)  # 함수명 수정 (evaluate_relevance -> evaluate_documents_node)
     workflow.add_node("update_results", update_results)
     workflow.add_node("finalize_results", finalize_results)
     
@@ -546,13 +563,24 @@ def create_rag_workflow() -> CompiledGraph:
 
     # 2. create_chunks -> 첫 청크 처리 또는 종료
     def after_create_chunks(state: GraphState) -> str:
+        service_name = "server2-rag"
+        from_node = "create_chunks"
+        to_node = ""
+        
         if state.get("error"): # 청킹 실패
             logger.error(f"청킹 실패로 파이프라인 종료: {state.get('error')}")
-            return "finalize_results"
-        if not state.get("has_next", False): # 청크 없음
+            to_node = "finalize_results"
+        elif not state.get("has_next", False): # 청크 없음
             logger.info("처리할 청크가 없어 파이프라인 종료.")
-            return "finalize_results"
-        return "process_chunk" # 청크 있으면 첫 청크 처리
+            to_node = "finalize_results"
+        else:
+            to_node = "process_chunk" # 청크 있으면 첫 청크 처리
+            
+        # 노드 전환 추적
+        from src.metrics import track_node_transition
+        track_node_transition(service_name, from_node, to_node)
+        
+        return to_node
 
     workflow.add_conditional_edges(
         "create_chunks",
@@ -561,12 +589,23 @@ def create_rag_workflow() -> CompiledGraph:
 
     # 3. process_chunk -> 요약 또는 종료 (오류 시)
     def after_process_chunk(state: GraphState) -> str:
+        service_name = "server2-rag"
+        from_node = "process_chunk"
+        to_node = ""
+        
         if state.get("error"): # 청크 처리 중 오류 (예: 인덱스 초과)
             logger.error(f"청크 처리 중 오류로 파이프라인 종료: {state.get('error')}")
-            return "finalize_results"
-        # process_chunk에서 has_next가 False로 설정되면 여기서 잡히지 않음.
-        # 대신, update_results 이후 분기에서 처리.
-        return "generate_summary"
+            to_node = "finalize_results"
+        else:
+            # process_chunk에서 has_next가 False로 설정되면 여기서 잡히지 않음.
+            # 대신, update_results 이후 분기에서 처리.
+            to_node = "generate_summary"
+            
+        # 노드 전환 추적
+        from src.metrics import track_node_transition
+        track_node_transition(service_name, from_node, to_node)
+        
+        return to_node
 
     workflow.add_conditional_edges(
         "process_chunk",
@@ -578,6 +617,10 @@ def create_rag_workflow() -> CompiledGraph:
     
     # 5. decide_search -> search_documents 또는 update_results (검색 불필요)
     def decide_search_flow(state: GraphState) -> str:
+        service_name = "server2-rag"
+        from_node = "decide_search"
+        to_node = ""
+        
         # decide_search 노드에서 이미 decision 결과를 상태에 저장했으므로, 해당 값을 사용합니다.
         # decision_dict는 {"thought": ..., "answer": ..., "decision": ..., "success": ..., "error": ...} 형태입니다.
         decision_dict = state.get("decision", {})
@@ -591,14 +634,20 @@ def create_rag_workflow() -> CompiledGraph:
 
         if search_needed:
             logger.info("[decide_search_flow] 검색 필요: 'search_documents'로 이동합니다.")
-            return "search_documents"
+            to_node = "search_documents"
         else:
             # 검색이 필요 없거나, decide_search 단계에서 오류가 발생한 경우 (success=False)
             if not decision_dict.get("success", False):
                 logger.warning("[decide_search_flow] 검색 결정 단계에서 오류 발생. 'update_results'로 이동합니다.")
             else:
                 logger.info("[decide_search_flow] 검색 불필요: 'update_results'로 이동합니다.")
-            return "update_results"
+            to_node = "update_results"
+            
+        # 노드 전환 추적
+        from src.metrics import track_node_transition
+        track_node_transition(service_name, from_node, to_node)
+        
+        return to_node
     
     workflow.add_conditional_edges(
         "decide_search",
@@ -613,19 +662,28 @@ def create_rag_workflow() -> CompiledGraph:
     
     # 8. update_results -> 재시도 또는 다음 청크 또는 종료
     def after_update_results(state: GraphState) -> str:
-        if state.get("should_retry", False):
-            logger.info(f"청크 {state.get('entry',{}).get('chunk_id','N/A') + 1} 재시도: generate_summary로 이동")
-            return "generate_summary"  # 현재 청크 재시도 (retry_count는 update_results에서 증가)
+        service_name = "server2-rag"
+        from_node = "update_results"
+        to_node = ""
         
-        if state.get("has_next", False):
+        if state.get("should_retry", False):
+            to_node = "generate_summary"
+            logger.info(f"청크 {state.get('entry',{}).get('chunk_id','N/A') + 1} 재시도: generate_summary로 이동")
+        elif state.get("has_next", False):
             next_idx_to_process = state.get('current_chunk_index', 0)
             processed_idx = next_idx_to_process - 1 # The index that was just processed
             logger.info(f"[after_update_results] 이전 청크 (인덱스 {processed_idx}) 처리 완료. 'process_chunk'로 라우팅하여 다음 청크 (인덱스 {next_idx_to_process})를 처리합니다.")
-            return "process_chunk" # 다음 청크 처리
+            to_node = "process_chunk"
+        else:
+            total_chunks_count = state.get('total_chunks', 0)
+            logger.info(f"[after_update_results] 모든 청크 처리 완료 ({total_chunks_count}/{total_chunks_count}). 'finalize_results'로 라우팅합니다.")
+            to_node = "finalize_results"
         
-        total_chunks_count = state.get('total_chunks', 0)
-        logger.info(f"[after_update_results] 모든 청크 처리 완료 ({total_chunks_count}/{total_chunks_count}). 'finalize_results'로 라우팅합니다.")
-        return "finalize_results" # 모든 청크 완료
+        # 노드 전환 추적
+        from src.metrics import track_node_transition
+        track_node_transition(service_name, from_node, to_node)
+        
+        return to_node
     
     workflow.add_conditional_edges(
         "update_results",
@@ -706,6 +764,13 @@ def run_pipeline(text: str, thread_id: str = None) -> Dict[str, Any]:
         api_total_elapsed_time = pipeline_outcome.get("total_elapsed_time", 0)
         pipeline_error = pipeline_outcome.get("error")
 
+        # 결과 형식 수정 - chunk 키 사용 (chunk_en 대신)
+        for chunk_result in api_result:
+            # chunk 필드 확인 및 설정
+            if "chunk" not in chunk_result:
+                # 원본 텍스트를 chunk 필드로 설정
+                chunk_result["chunk"] = chunk_result.get("chunk", "")
+                
         # 파이프라인 완료 메트릭 기록
         team5_pipeline_duration.labels(service=service_name).observe(api_total_elapsed_time)
 
