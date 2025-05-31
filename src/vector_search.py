@@ -30,6 +30,7 @@ from .metrics import (
     team5_vector_search_results
 )
 
+
 def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, Any]], float]:
     """
     벡터 검색 API를 호출하여 관련 문서를 검색합니다.
@@ -48,6 +49,7 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
         "top_k": k,
         "indices": ["master_documents"]  # 기본 인덱스 설정 추가
     }
+    
     trace_id = str(uuid.uuid4())
     start = time.time()
     service_name = "server2-rag"
@@ -206,7 +208,7 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
             
             # 메트릭 기록
             team5_vector_search_duration.labels(service=service_name).observe(elapsed)
-            team5_vector_search_results.labels(service=service_name).observe(len(results))
+            team5_vector_search_results.labels(service=service_name).observe(len(formatted_results))
             
             logger.info({
                 "event": "vector_search_success",
@@ -215,7 +217,7 @@ def search_vector(keywords: List[str], k: int = None) -> Tuple[List[Dict[str, An
                 "num_results": len(results),
                 "processed_results_sample": str(results[:1])[:200] if results else "[]"
             })
-            return results, elapsed
+            return formatted_results, elapsed
             
     except httpx.HTTPStatusError as e:
         elapsed = time.time() - start
